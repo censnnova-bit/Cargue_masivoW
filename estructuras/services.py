@@ -1,5 +1,5 @@
 import pandas as pd
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 import os
 import re
@@ -143,468 +143,108 @@ class DataUtils:
     
 
 class OracleHelper:
-    """Helper para consultas a Oracle Database"""
+    """
+    Helper para consultas a Oracle Database.
+    
+    NOTA: Esta clase ahora delega todas las consultas a OracleRepository.
+    Se mantiene por compatibilidad con código existente.
+    """
+    
+    # Importar el repositorio
+    from estructuras.repositories import OracleRepository, OracleConnectionHelper
     
     @classmethod
     def get_oracle_config(cls):
         """Obtiene la configuración de Oracle desde Django settings"""
-        db_config = settings.DATABASES.get('oracle', {})
-        if not db_config:
-            # Fallback a credenciales directas si no hay configuración en settings
-            return {
-                'user': 'CENS_CONSULTA',
-                'password': 'C3N5C0N5ULT4',
-                'dsn': 'EPM-PO18:1521/GENESTB'
-            }
-        
-        # Construir DSN desde la configuración de Django
-        host = db_config.get('HOST', 'EPM-PO18')
-        port = db_config.get('PORT', '1521')
-        name = db_config.get('NAME', 'GENESTB')
-        
-        # Si NAME contiene el formato completo host:port/service, usarlo tal como está
-        if ':' in name and '/' in name:
-            dsn = name
-        else:
-            # Extraer solo el service name si viene en formato completo
-            service_name = name.split('/')[-1] if '/' in name else name
-            dsn = f"{host}:{port}/{service_name}"
-        
-        return {
-            'user': db_config.get('USER', 'CENS_CONSULTA'),
-            'password': db_config.get('PASSWORD', 'C3N5C0N5ULT4'),
-            'dsn': dsn
-        }
+        return cls.OracleConnectionHelper.get_oracle_config()
     
     @classmethod
     def get_connection(cls):
         """
-        Crea y retorna una conexión a Oracle usando las credenciales de settings.
-        Esta es una función de contexto (context manager) que debe usarse con 'with'.
-        
-        Returns:
-            oracledb.Connection: Conexión a Oracle
-            
-        Raises:
-            Exception: Si no se puede conectar a Oracle
-            
-        Example:
-            with OracleHelper.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM table")
-                result = cursor.fetchall()
+        Crea y retorna una conexión a Oracle.
+        Delega a OracleConnectionHelper.
         """
-        oracle_config = cls.get_oracle_config()
-        return oracledb.connect(**oracle_config)
+        return cls.OracleConnectionHelper.get_connection()
     
     @classmethod
     def test_connection(cls) -> bool:
         """
-        Prueba la conexión a Oracle sin ejecutar queries.
-        
-        Returns:
-            True si la conexión es exitosa, False en caso contrario
+        Prueba la conexión a Oracle.
+        Delega a OracleConnectionHelper.
         """
-        try:
-            oracle_config = cls.get_oracle_config()
-            with oracledb.connect(**oracle_config) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT 1 FROM DUAL")
-                    result = cursor.fetchone()
-                    return result is not None
-        except Exception as e:
-            print(f"ERROR conexión Oracle: {str(e)}")
-            return False
+        return cls.OracleConnectionHelper.test_connection()
     
     @classmethod
     def obtener_coordenadas_por_fid(cls, fid_codigo: str) -> Tuple[str, str]:
         """
-        Consulta Oracle para obtener coor_gps_lat y coor_gps_lon por G3E_FID.
-        
-        Args:
-            fid_codigo: Código FID a buscar
-            
-        Returns:
-            Tuple con (coor_gps_lat, coor_gps_lon) como strings.
-            Si no se encuentra o hay error, retorna ('', '')
+        Consulta Oracle para obtener coordenadas GPS por G3E_FID.
+        Delega a OracleRepository.
         """
-        # Verificar si Oracle está habilitado en settings
-        if hasattr(settings, 'ORACLE_ENABLED') and not settings.ORACLE_ENABLED:
-            print(f"DEBUG Oracle: Consultas Oracle deshabilitadas para FID {fid_codigo}")
-            return ('', '')
-            
-        try:
-            # Normalizar FID (eliminar espacios, convertir a string y remover .0 si existe)
-            fid_limpio = str(fid_codigo).strip()
-            if not fid_limpio or fid_limpio.lower() in ('nan', 'none', ''):
-                return ('', '')
-                
-            # Limpiar FID: remover .0 si es un número entero
-            if fid_limpio.endswith('.0'):
-                try:
-                    float_val = float(fid_limpio)
-                    if float_val.is_integer():
-                        fid_limpio = str(int(float_val))
-                except (ValueError, OverflowError):
-                    pass
-            
-            # Conectar a Oracle
-            oracle_config = cls.get_oracle_config()
-            with oracledb.connect(**oracle_config) as connection:
-                with connection.cursor() as cursor:
-                    # Configurar timeout para queries largas (5 segundos en milisegundos)
-                    try:
-                        cursor.callTimeout = 5000
-                    except AttributeError:
-                        # Fallback si callTimeout no está disponible
-                        pass
-                    
-                    # Query para obtener coordenadas por FID
-                    query = """
-                    SELECT g3e_fid, coor_gps_lat, coor_gps_lon
-                    FROM ccomun c
-                    WHERE g3e_fid = :fid_param
-                    """
-                    
-                    cursor.execute(query, {"fid_param": fid_limpio})
-                    result = cursor.fetchone()
-                    
-                    if result:
-                        g3e_fid, lat, lon = result
-                        # Convertir a string y manejar valores None
-                        lat_str = str(lat) if lat is not None else ''
-                        lon_str = str(lon) if lon is not None else ''
-                        
-                        print(f"✅ Oracle: FID {fid_limpio} -> lat={lat_str}, lon={lon_str}")
-                        return (lat_str, lon_str)
-                    else:
-                        print(f"⚠️ Oracle: No se encontró FID {fid_limpio} en la base de datos")
-                        return ('', '')
-                        
-        except Exception as e:
-            error_msg = str(e)
-            if "timed out" in error_msg.lower():
-                print(f"⏱️ Oracle TIMEOUT para FID {fid_limpio} (original: {fid_codigo}): Conexión expiró. Continuando sin coordenadas GPS.")
-            elif "connection" in error_msg.lower():
-                print(f"🔌 Oracle CONEXIÓN para FID {fid_limpio} (original: {fid_codigo}): No se pudo conectar. Continuando sin coordenadas GPS.")
-            else:
-                print(f"❌ Oracle ERROR para FID {fid_limpio} (original: {fid_codigo}): {error_msg}")
-            # Si hay error de conexión, continuar sin detener el proceso
-            return ('', '')
+        return cls.OracleRepository.obtener_coordenadas_por_fid(fid_codigo)
 
     @classmethod
     def obtener_fid_desde_codigo_operativo(cls, codigo_operativo: str) -> str:
         """
-        Obtiene el FID real desde el código operativo usando Oracle
-        
-        Args:
-            codigo_operativo: Código operativo desde el Excel (ej: Z238163, Z231390)
-            
-        Returns:
-            str: FID real o '' si no se encuentra
+        Obtiene el FID real desde el código operativo.
+        Delega a OracleRepository.
         """
-        # Verificar si Oracle está habilitado en settings
-        if hasattr(settings, 'ORACLE_ENABLED') and not settings.ORACLE_ENABLED:
-            print(f"DEBUG Oracle: Consultas Oracle deshabilitadas para código operativo {codigo_operativo}")
-            return ''
-            
-        if not codigo_operativo:
-            return ''
-            
-        # Limpiar el código operativo
-        codigo_limpio = str(codigo_operativo).strip()
-        if not codigo_limpio or codigo_limpio.lower() in ('nan', 'none', ''):
-            return ''
-            
-        print(f"🔍 Buscando FID para código operativo: {codigo_limpio}")
-        
-        try:
-            oracle_config = cls.get_oracle_config()
-            with oracledb.connect(**oracle_config) as connection:
-                with connection.cursor() as cursor:
-                    # Configurar timeout
-                    try:
-                        cursor.callTimeout = 5000
-                    except AttributeError:
-                        pass
-                    
-                    # Query para obtener FID desde código operativo
-                    query = """
-                    SELECT c.codigo_operativo, c.g3e_fid
-                    FROM ccomun c
-                    WHERE codigo_operativo = :codigo_param
-                    """
-                    
-                    cursor.execute(query, {"codigo_param": codigo_limpio})
-                    result = cursor.fetchone()
-                    
-                    if result:
-                        codigo_op, fid_real = result
-                        fid_str = str(fid_real) if fid_real is not None else ''
-                        print(f"✅ Oracle: Código operativo {codigo_limpio} -> FID {fid_str}")
-                        return fid_str
-                    else:
-                        print(f"⚠️ Oracle: No se encontró FID para código operativo {codigo_limpio}")
-                        return ''
-                        
-        except Exception as e:
-            error_msg = str(e)
-            if "timed out" in error_msg.lower():
-                print(f"⏱️ Oracle TIMEOUT para código operativo {codigo_limpio}: Conexión expiró.")
-            elif "connection" in error_msg.lower():
-                print(f"🔌 Oracle CONEXIÓN para código operativo {codigo_limpio}: No se pudo conectar.")
-            else:
-                print(f"❌ Oracle ERROR para código operativo {codigo_limpio}: {error_msg}")
-            return ''
+        return cls.OracleRepository.obtener_fid_desde_codigo_operativo(codigo_operativo)
 
     @classmethod
     def obtener_fid_desde_enlace(cls, enlace: str) -> str:
         """
-        Obtiene el FID (g3e_fid) desde el ENLACE consultando la base de datos Oracle.
-        
-        Args:
-            enlace: Identificador/ENLACE del registro (ej: P113, P240, etc.)
-            
-        Returns:
-            str: FID (g3e_fid) o '' si no se encuentra
+        Obtiene el FID desde el ENLACE.
+        Delega a OracleRepository.
         """
-        # Verificar si Oracle está habilitado en settings
-        if hasattr(settings, 'ORACLE_ENABLED') and not settings.ORACLE_ENABLED:
-            print(f"DEBUG Oracle: Consultas Oracle deshabilitadas para ENLACE {enlace}")
-            return ''
-            
-        if not enlace:
-            return ''
-            
-        # Limpiar el enlace
-        enlace_limpio = str(enlace).strip().upper()
-        if not enlace_limpio or enlace_limpio.lower() in ('nan', 'none', ''):
-            return ''
-            
-        print(f"🔍 Buscando FID para ENLACE: {enlace_limpio}")
-        
-        try:
-            oracle_config = cls.get_oracle_config()
-            with oracledb.connect(**oracle_config) as connection:
-                with connection.cursor() as cursor:
-                    # Configurar timeout
-                    try:
-                        cursor.callTimeout = 5000
-                    except AttributeError:
-                        pass
-                    
-                    # Query para obtener FID desde ENLACE
-                    query = """
-                    SELECT g3e_fid
-                    FROM ccomun
-                    WHERE UPPER(enlace) = :enlace_param
-                    """
-                    
-                    cursor.execute(query, {"enlace_param": enlace_limpio})
-                    result = cursor.fetchone()
-                    
-                    if result:
-                        fid_real = result[0]
-                        fid_str = str(fid_real) if fid_real is not None else ''
-                        print(f"✅ Oracle: ENLACE {enlace_limpio} -> FID {fid_str}")
-                        return fid_str
-                    else:
-                        print(f"⚠️ Oracle: No se encontró FID para ENLACE {enlace_limpio}")
-                        return ''
-                        
-        except Exception as e:
-            error_msg = str(e)
-            if "timed out" in error_msg.lower():
-                print(f"⏱️ Oracle TIMEOUT para ENLACE {enlace_limpio}: Conexión expiró.")
-            elif "connection" in error_msg.lower():
-                print(f"🔌 Oracle CONEXIÓN para ENLACE {enlace_limpio}: No se pudo conectar.")
-            else:
-                print(f"❌ Oracle ERROR para ENLACE {enlace_limpio}: {error_msg}")
-            return ''
+        return cls.OracleRepository.obtener_fid_desde_enlace(enlace)
 
     @classmethod
     def obtener_datos_completos_por_fid(cls, fid_real: str) -> Dict[str, str]:
         """
-        Obtiene datos completos (coordenadas, TIPO, PROPIETARIO, etc.) desde Oracle usando FID real
-        
-        Args:
-            fid_real: FID real obtenido desde código operativo
-            
-        Returns:
-            Dict con claves: COOR_GPS_LAT, COOR_GPS_LON, TIPO, TIPO_ADECUACION, PROPIETARIO, UBICACION, CLASIFICACION_MERCADO
+        Obtiene datos completos desde Oracle usando FID real.
+        Delega a OracleRepository.
         """
-        # Verificar si Oracle está habilitado en settings
-        if hasattr(settings, 'ORACLE_ENABLED') and not settings.ORACLE_ENABLED:
-            print(f"DEBUG Oracle: Consultas Oracle deshabilitadas para FID {fid_real}")
-            return {}
-            
-        if not fid_real:
-            return {}
-            
-        # Limpiar el FID
-        fid_limpio = str(fid_real).strip()
-        if not fid_limpio or fid_limpio.lower() in ('nan', 'none', ''):
-            return {}
-            
-        print(f"🔍 Buscando datos completos para FID real: {fid_limpio}")
-        
-        try:
-            oracle_config = cls.get_oracle_config()
-            with oracledb.connect(**oracle_config) as connection:
-                with connection.cursor() as cursor:
-                    # Configurar timeout
-                    try:
-                        cursor.callTimeout = 5000
-                    except AttributeError:
-                        pass
-                    
-                    # Query para obtener datos completos desde FID real
-                    query = """
-                    SELECT 
-                        c.coor_gps_lat,
-                        c.coor_gps_lon,
-                        c.estado,
-                        c.estado,
-                        c.empresa_origen,
-                        c.ubicacion,
-                        c.clasificacion_mercado
-                    FROM ccomun c
-                    WHERE c.g3e_fid = :fid_param
-                    """
-                    
-                    cursor.execute(query, {"fid_param": fid_limpio})
-                    result = cursor.fetchone()
-                    
-                    if result:
-                        lat, lon, estado, estado_salud, empresa_origen, ubicacion, clasif_mercado = result
-                        
-                        datos = {
-                            'COOR_GPS_LAT': str(lat) if lat is not None else '',
-                            'COOR_GPS_LON': str(lon) if lon is not None else '',
-                            'TIPO': str(estado) if estado is not None else '',
-                            'TIPO_ADECUACION': str(estado_salud) if estado_salud is not None else '',
-                            'PROPIETARIO': str(empresa_origen) if empresa_origen is not None else '',
-                            'UBICACION': str(ubicacion) if ubicacion is not None else '',
-                            'CLASIFICACION_MERCADO': str(clasif_mercado) if clasif_mercado is not None else ''
-                        }
-                        
-                        print(f"✅ Oracle datos completos FID {fid_limpio}: lat={datos['COOR_GPS_LAT']}, lon={datos['COOR_GPS_LON']}, estado={datos['TIPO']}")
-                        return datos
-                    else:
-                        print(f"⚠️ Oracle: No se encontraron datos completos para FID {fid_limpio}")
-                        return {}
-                        
-        except Exception as e:
-            error_msg = str(e)
-            if "timed out" in error_msg.lower():
-                print(f"⏱️ Oracle TIMEOUT para FID {fid_limpio}: Conexión expiró.")
-            elif "connection" in error_msg.lower():
-                print(f"🔌 Oracle CONEXIÓN para FID {fid_limpio}: No se pudo conectar.")
-            else:
-                print(f"❌ Oracle ERROR para FID {fid_limpio}: {error_msg}")
-            return {}
+        return cls.OracleRepository.obtener_datos_completos_por_fid(fid_real)
 
     @classmethod
     def obtener_datos_txt_nuevo_por_fid(cls, fid_real: str) -> Dict[str, str]:
         """
-        Obtiene datos específicos para TXT nuevo desde Oracle usando FID real
-        Consulta tablas: eposte_at, ccomun, cpropietario
-        
-        Args:
-            fid_real: FID real obtenido desde código operativo
-            
-        Returns:
-            Dict con claves: COORDENADA_X, COORDENADA_Y, TIPO, TIPO_ADECUACION, PROPIETARIO, UBICACION, CLASIFICACION_MERCADO
+        Obtiene datos específicos para TXT nuevo desde Oracle.
+        Delega a OracleRepository.
         """
-        # Verificar si Oracle está habilitado en settings
-        if hasattr(settings, 'ORACLE_ENABLED') and not settings.ORACLE_ENABLED:
-            print(f"DEBUG Oracle: Consultas Oracle deshabilitadas para FID {fid_real}")
-            return {}
-            
-        if not fid_real:
-            return {}
-            
-        # Limpiar el FID
-        fid_limpio = str(fid_real).strip()
-        if not fid_limpio or fid_limpio.lower() in ('nan', 'none', ''):
-            return {}
-            
-        print(f"🔍 Buscando datos TXT nuevo para FID real: {fid_limpio}")
-        
-        try:
-            oracle_config = cls.get_oracle_config()
-            with oracledb.connect(**oracle_config) as connection:
-                with connection.cursor() as cursor:
-                    # Configurar timeout
-                    try:
-                        cursor.callTimeout = 5000
-                    except AttributeError:
-                        pass
-                    
-                    # Query específica para TXT nuevo con JOIN explícito de tablas
-                    query = """
-                    SELECT 
-                        c.coor_gps_lon,
-                        c.coor_gps_lat,
-                        p.tipo,
-                        p.tipo_adecuacion,
-                        pr.propietario_1,
-                        c.ubicacion,
-                        c.clasificacion_mercado
-                    FROM ccomun c
-                        LEFT JOIN eposte_at p ON c.g3e_fid = p.g3e_fid
-                        LEFT JOIN cpropietario pr ON c.g3e_fid = pr.g3e_fid
-                    WHERE c.g3e_fid = :fid_param
-                    """
-                    
-                    cursor.execute(query, {"fid_param": fid_limpio})
-                    result = cursor.fetchone()
-                    
-                    if result:
-                        lon, lat, tipo, tipo_adec, propietario, ubicacion, clasif_mercado = result
-                        
-                        datos = {
-                            'COORDENADA_X': str(lon) if lon is not None else '',
-                            'COORDENADA_Y': str(lat) if lat is not None else '',
-                            'TIPO': str(tipo) if tipo is not None else '',
-                            'TIPO_ADECUACION': str(tipo_adec) if tipo_adec is not None else '',
-                            'PROPIETARIO': str(propietario) if propietario is not None else '',
-                            'UBICACION': str(ubicacion) if ubicacion is not None else '',
-                            'CLASIFICACION_MERCADO': str(clasif_mercado) if clasif_mercado is not None else ''
-                        }
-                        
-                        print(f"✅ Oracle TXT nuevo FID {fid_limpio}: lon={datos['COORDENADA_X']}, lat={datos['COORDENADA_Y']}, tipo={datos['TIPO']}")
-                        return datos
-                    else:
-                        print(f"⚠️ Oracle: No se encontraron datos TXT nuevo para FID {fid_limpio}")
-                        return {}
-                        
-        except Exception as e:
-            error_msg = str(e)
-            if "timed out" in error_msg.lower():
-                print(f"⏱️ Oracle TIMEOUT para FID TXT nuevo {fid_limpio}: Conexión expiró.")
-            elif "connection" in error_msg.lower():
-                print(f"🔌 Oracle CONEXIÓN para FID TXT nuevo {fid_limpio}: No se pudo conectar.")
-            else:
-                print(f"❌ Oracle ERROR para FID TXT nuevo {fid_limpio}: {error_msg}")
-            return {}
+        return cls.OracleRepository.obtener_datos_txt_nuevo_por_fid(fid_real)
 
     @classmethod
     def obtener_datos_txt_baja_por_fid(cls, fid_real: str) -> Dict[str, str]:
         """
-        Obtiene datos específicos para TXT baja desde Oracle usando FID real
-        Utiliza la misma query que txt_nuevo pero para archivos de baja
-        
-        Args:
-            fid_real: FID real obtenido desde código operativo
-            
-        Returns:
-            Dict con claves: COORDENADA_X, COORDENADA_Y, TIPO, TIPO_ADECUACION, PROPIETARIO, UBICACION, CLASIFICACION_MERCADO
+        Obtiene datos específicos para TXT baja desde Oracle.
+        Delega a OracleRepository.
         """
-        # Verificar si Oracle está habilitado en settings
-        if hasattr(settings, 'ORACLE_ENABLED') and not settings.ORACLE_ENABLED:
-            print(f"DEBUG Oracle: Consultas Oracle deshabilitadas para FID baja {fid_real}")
-            return {}
+        return cls.OracleRepository.obtener_datos_txt_baja_por_fid(fid_real)
+    
+    @classmethod
+    def consultar_conductor_por_codigo(cls, codigo_conductor: str) -> Optional[Dict[str, str]]:
+        """
+        Consulta datos de conductor por código.
+        Delega a OracleRepository.
+        """
+        return cls.OracleRepository.consultar_conductor_por_codigo(codigo_conductor)
+    
+    @classmethod
+    def obtener_coordenadas_nodo_por_fid(cls, fid_nodo: str) -> Tuple[str, str]:
+        """
+        Obtiene coordenadas de un nodo por FID.
+        Delega a OracleRepository.
+        """
+        return cls.OracleRepository.obtener_coordenadas_nodo_por_fid(fid_nodo)
+    
+    @classmethod
+    def consultar_norma_por_fid(cls, fid: str) -> Dict[str, str]:
+        """
+        Consulta datos de norma por FID.
+        Delega a OracleRepository.
+        """
+        return cls.OracleRepository.consultar_norma_por_fid(fid)
 
     @classmethod
     def obtener_datos_norma_por_fid(cls, fid_real: str) -> Dict[str, str]:
@@ -4030,7 +3670,7 @@ class FileGenerator:
                     print(f"   ✅ INCLUIDO como BAJA (FID: '{fid_git}', UC: vacía)")
                     datos_baja.append(registro)
                 else:
-                    print("   ❌ EXCLUIDO (no cumple regla: FID sin UC)")
+                    print("   ❌ EXCLUIDO (por que no cumple regla: FID sin UC)")
             
             print(f"DEBUG generar_txt_baja_linea: {len(datos_baja)} registros clasificados como BAJA")
             
