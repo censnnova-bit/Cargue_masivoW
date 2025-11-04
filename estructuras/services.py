@@ -1770,6 +1770,112 @@ class FileGenerator:
                         hoja_str = f" de la hoja '{hoja}'" if hoja else ''
                         _add_err(fila_excel, f"El valor '{valor_cm}' en Código Material no es un número en la fila {fila_excel}{hoja_str} del Excel.")
 
+            # ========== NUEVAS VALIDACIONES ADICIONALES ==========
+            if datos_finales:
+                print(f"DEBUG: Iniciando validaciones adicionales para {len(datos_finales)} registros")
+                
+                # Cargar datos CRUDOS del Excel para acceder a campos originales
+                raw_datos_excel = []
+                try:
+                    processor_raw = ExcelProcessor(self.proceso)
+                    raw_datos_excel, _ = processor_raw.procesar_archivo()
+                except Exception as e:
+                    print(f"⚠️ No se pudieron cargar datos crudos del Excel para validaciones: {e}")
+                
+                # Identificar qué registros son de expansión y reposición
+                indices_con_fid_rep = set()
+                try:
+                    indices_con_fid_rep, _ = self._indices_con_fid_rep_exactos()
+                except Exception:
+                    indices_con_fid_rep = set()
+                
+                for i, reg in enumerate(datos_finales):
+                    # Obtener índice original y fila excel
+                    idx_excel = idx_map[i] if 'idx_map' in locals() and i < len(idx_map) else i
+                    header_row = excel_meta.get('header_row') if 'excel_meta' in locals() else None
+                    fila_excel = (header_row + 1 + (idx_excel + 1)) if isinstance(header_row, int) else (idx_excel + 1)
+                    
+                    # Obtener registro raw del Excel
+                    registro_excel = raw_datos_excel[idx_excel] if idx_excel < len(raw_datos_excel) else {}
+                    
+                    # Determinar si es expansión o reposición
+                    tiene_fid_rep = idx_excel in indices_con_fid_rep
+                    es_expansion_o_reposicion = True  # Todos los registros según Opción B
+                    
+                    # VALIDACIÓN #1: COORDENADAS
+                    coord_x = reg.get('COORDENADA_X', '')
+                    coord_y = reg.get('COORDENADA_Y', '')
+                    
+                    if coord_x and str(coord_x).strip():
+                        try:
+                            x_val = float(str(coord_x).strip())
+                            if x_val >= 0:  # Longitud debe ser negativa
+                                _add_err(fila_excel, f"La coordenada X (longitud) debe ser negativa en la fila {fila_excel}. Valor actual: {coord_x}")
+                        except (ValueError, TypeError):
+                            _add_err(fila_excel, f"La coordenada X no tiene un formato numérico válido en la fila {fila_excel}. Valor: {coord_x}")
+                    
+                    if coord_y and str(coord_y).strip():
+                        try:
+                            y_val = float(str(coord_y).strip())
+                            if y_val < 0:  # Latitud debe ser positiva
+                                _add_err(fila_excel, f"La coordenada Y (latitud) debe ser positiva en la fila {fila_excel}. Valor actual: {coord_y}")
+                        except (ValueError, TypeError):
+                            _add_err(fila_excel, f"La coordenada Y no tiene un formato numérico válido en la fila {fila_excel}. Valor: {coord_y}")
+                    
+                    # VALIDACIÓN #2: AÑO ENTRADA OPERACIÓN (solo para desmantelado y reposición)
+                    if tiene_fid_rep:  # Solo para registros con FID_rep
+                        año_entrada = ''
+                        # Buscar el campo en el Excel raw
+                        for campo_posible in ['Año entrada operación_rep', 'año entrada operación_rep', 'AÑO_ENTRADA_OPERACION_REP']:
+                            if campo_posible in registro_excel and registro_excel.get(campo_posible) not in (None, ''):
+                                año_entrada = str(registro_excel.get(campo_posible)).strip()
+                                break
+                        
+                        if not año_entrada or año_entrada.lower() in ('nan', 'none', ''):
+                            _add_err(fila_excel, f"El campo 'Año entrada operación' es obligatorio para registros de desmantelado/reposición en la fila {fila_excel}")
+                        else:
+                            # Validar formato de año
+                            try:
+                                # Convertir a float primero para manejar decimales como 1996.0
+                                año_float = float(año_entrada)
+                                año_int = int(año_float)
+                                
+                                # Verificar que sea un número entero (sin parte decimal)
+                                if año_float != año_int:
+                                    _add_err(fila_excel, f"El año de entrada operación debe ser un número entero en la fila {fila_excel}. Valor: {año_entrada}")
+                                elif año_int < 1900 or año_int > 2024:
+                                    _add_err(fila_excel, f"El año de entrada operación debe estar entre 1900 y 2024 en la fila {fila_excel}. Valor: {año_int}")
+                                
+                            except (ValueError, TypeError):
+                                _add_err(fila_excel, f"El año de entrada operación debe tener formato numérico válido en la fila {fila_excel}. Valor: {año_entrada}")
+                    
+                    # VALIDACIÓN #3: UBICACIÓN (expansión y reposición)
+                    if es_expansion_o_reposicion:
+                        ubicacion = reg.get('UBICACION', '')
+                        if not ubicacion or str(ubicacion).strip() == '' or str(ubicacion).strip().lower() in ('nan', 'none'):
+                            _add_err(fila_excel, f"El campo 'Ubicación' no puede estar vacío para registros de expansión/reposición en la fila {fila_excel}")
+                    
+                    # VALIDACIÓN #4: NOMBRE (expansión y reposición)
+                    if es_expansion_o_reposicion:
+                        nombre = ''
+                        # Buscar el campo NOMBRE en diferentes variantes
+                        for campo_posible in ['NOMBRE', 'Nombre', 'nombre']:
+                            if campo_posible in reg and reg.get(campo_posible) not in (None, ''):
+                                nombre = str(reg.get(campo_posible)).strip()
+                                break
+                        # También buscar en el Excel raw
+                        if not nombre:
+                            for campo_posible in ['Nombre', 'NOMBRE', 'nombre']:
+                                if campo_posible in registro_excel and registro_excel.get(campo_posible) not in (None, ''):
+                                    nombre = str(registro_excel.get(campo_posible)).strip()
+                                    break
+                        
+                        if not nombre or nombre.lower() in ('nan', 'none', ''):
+                            _add_err(fila_excel, f"El campo 'Nombre' no puede estar vacío para registros de expansión/reposición en la fila {fila_excel}")
+                
+                print(f"DEBUG: Completadas validaciones adicionales. Errores encontrados: {len(errores_validacion)}")
+            # ========== FIN NUEVAS VALIDACIONES ADICIONALES ==========
+
             # ENRIQUECIMIENTO ORACLE PARA REGISTROS CON CÓDIGO OPERATIVO
             # Evitar enriquecer si ya hay errores de validación previos; primero queremos reportar todo
             if datos_finales and not errores_validacion:
@@ -2012,6 +2118,11 @@ class FileGenerator:
                         valor = registro_validado.get(campo, '')
                         # IMPORTANTE: Limpiar el valor antes de agregarlo
                         valor_limpio = self._limpiar_valor_para_txt(valor)
+                        
+                        # TRANSFORMACIÓN A MAYÚSCULAS (solo al exportar)
+                        if campo in ['UBICACION', 'NOMBRE'] and valor_limpio:
+                            valor_limpio = valor_limpio.upper()
+                        
                         valores.append(valor_limpio)
                     f.write('|'.join(valores) + '\n')
             
