@@ -127,8 +127,9 @@ def iniciar_proceso(request):
                 proceso.save()
                 
                 # Continuar con el procesamiento automáticamente
-                from .services import procesar_estructura_completo
-                procesar_estructura_completo(str(proceso.id))
+                # Import directo para evitar circular import
+                import estructuras.services as services_module
+                services_module.procesar_estructura_completo(str(proceso.id))
                 
             except Exception as e:
                 proceso.estado = 'ERROR'
@@ -168,10 +169,11 @@ def proceso_detalle(request, proceso_id):
         proceso.save()
         
         # Iniciar procesamiento en hilo separado
-        from .services import procesar_estructura_completo
+        # Import directo para evitar circular import
+        import estructuras.services as services_module
         import threading
         thread = threading.Thread(
-            target=procesar_estructura_completo, 
+            target=services_module.procesar_estructura_completo, 
             args=(str(proceso.id),)
         )
         thread.daemon = True
